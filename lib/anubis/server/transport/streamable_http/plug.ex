@@ -105,7 +105,9 @@ if Code.ensure_loaded?(Plug) do
     # GET request handler - establishes SSE connection
 
     defp handle_get(conn, %{transport: transport, session_header: session_header} = opts) do
-      if wants_sse?(conn) do
+      accept = conn |> get_req_header("accept") |> List.first("")
+
+      if String.contains?(accept, "text/event-stream") do
         session_id = get_or_create_session_id(conn, session_header)
 
         case StreamableHTTP.register_sse_handler(transport, session_id) do
@@ -175,7 +177,7 @@ if Code.ensure_loaded?(Plug) do
 
     defp process_message(conn, %{message: message} = params) when is_map(message) do
       if Message.is_request(message) do
-        handle_request_with_possible_sse(conn, params)
+        handle_sse_request(conn, params)
       else
         # Notification
         params
@@ -220,34 +222,13 @@ if Code.ensure_loaded?(Plug) do
       end
     end
 
-    # Handle requests that might need SSE streaming
-
-    defp handle_request_with_possible_sse(conn, params) do
-      if wants_sse?(conn) do
-        handle_sse_request(conn, params)
-      else
-        handle_json_request(conn, params)
-      end
-    end
+    # Handle requests — always attempt SSE if a channel is registered, otherwise inline JSON
 
     defp handle_sse_request(conn, params) do
       case StreamableHTTP.handle_message_for_sse(params) do
         {:sse, response} ->
           route_sse_response(conn, response, params)
 
-        {:ok, response} ->
-          conn
-          |> put_resp_content_type("application/json")
-          |> maybe_add_session_header(params.session_header, params.session_id)
-          |> send_resp(200, response)
-
-        {:error, error} ->
-          handle_request_error(conn, error, params.message)
-      end
-    end
-
-    defp handle_json_request(conn, params) do
-      case StreamableHTTP.handle_message(params) do
         {:ok, response} ->
           conn
           |> put_resp_content_type("application/json")
@@ -347,13 +328,6 @@ if Code.ensure_loaded?(Plug) do
     end
 
     # Helper functions
-
-    defp wants_sse?(conn) do
-      conn
-      |> get_req_header("accept")
-      |> List.first("")
-      |> String.contains?("text/event-stream")
-    end
 
     defp validate_accept_header(conn) do
       accept_header =
